@@ -1,0 +1,9 @@
+# Site estático: não há build. A pasta publicada é a raiz do projeto.
+[build]
+  publish = "."
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
