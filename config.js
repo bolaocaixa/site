@@ -3,5 +3,5 @@
 // Opcional: NOME muda o nome que aparece no topo da loja.
 window.BOLAO_CONFIG = Object.assign({
   API_URL: 'COLE_AQUI_A_URL_EXEC_DO_APPS_SCRIPT',
-  NOME: 'Loja Carga Rápida'
+  NOME: 'BR Carregadores'
 }, window.BOLAO_CONFIG || {});
