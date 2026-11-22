@@ -21,6 +21,7 @@
 
     function cartao(u) {
       var eu = ctx.estado.usuario && ctx.estado.usuario.usuario === u.usuario;
+      var protegido = u.papel === 'supremo' || (u.papel === 'admin' && ctx.estado.usuario.papel !== 'supremo');
       var aberto = false;
       var caixa = h('div', {});
       var inUsuario = h('input', { name: 'novoUsuario-' + u.id, maxlength: 30, value: u.usuario, autocapitalize: 'none' });
@@ -55,11 +56,24 @@
 
       return h('article', { class: 'cartao' },
         h('div', { class: 'cartao-topo' }, h('h3', {}, u.nome + ' (@' + u.usuario + ')'),
-          h('span', { class: 'selo ' + (u.papel === 'participante' ? 'rascunho' : 'aberto') }, u.papel === 'admin' ? 'Administrador' : (u.papel === 'publicidade' ? 'Propagandas' : 'Participante'))),
-        eu ? h('p', { class: 'sub' }, 'Esta é a sua conta.') : h('div', { class: 'acoes' }, h('button', { onclick: function () {
-          aberto = !aberto;
-          caixa.replaceChildren(aberto ? formulario() : '');
-        } }, 'Redefinir credenciais')),
+          h('span', { class: 'selo ' + (u.papel === 'participante' ? 'rascunho' : 'aberto') }, ({ supremo: 'Administrador Supremo', admin: 'Administrador', publicidade: 'Propagandas' }[u.papel] || 'Participante'))),
+        h('p', { class: 'sub' }, u.email || 'Sem e-mail cadastrado (não consegue recuperar a senha sozinho).'),
+        eu ? h('p', { class: 'sub' }, 'Esta é a sua conta. Use "Minha conta" para trocar e-mail e senha.')
+          : (protegido ? h('p', { class: 'sub' }, 'Só o Administrador Supremo altera esta conta.') : h('div', { class: 'acoes' },
+            h('button', { onclick: function () {
+              aberto = !aberto;
+              caixa.replaceChildren(aberto ? formulario() : '');
+            } }, 'Redefinir credenciais'),
+            h('button', { onclick: function (ev) {
+              var novo = root.prompt('E-mail de ' + u.nome + ':', u.email || '');
+              if (novo === null) return;
+              ctx.executar(async function () {
+                var r = await API.chamar('admin.usuarios.email', { id: u.id, email: novo });
+                u.email = r.email;
+                desenhar();
+                ctx.UI.aviso('E-mail salvo.');
+              }, ev.target);
+            } }, u.email ? 'Alterar e-mail' : 'Cadastrar e-mail'))),
         caixa, resultado);
     }
 
@@ -77,6 +91,7 @@
     return h('section', {},
       h('h2', {}, 'Usuários'),
       h('p', { class: 'sub' }, 'Redefina o usuário e a senha de quem perdeu o acesso. A senha antiga deixa de valer na hora.'),
+      root.BolaoConta ? root.BolaoConta.blocoRecuperacao(ctx) : null,
       campo('Buscar', inBusca), erroGeral, lista);
   }
 

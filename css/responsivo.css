@@ -1,0 +1,66 @@
+/* Layout fluido: telas grandes aproveitam o espaço; celulares e telas pequenas ficam compactos. Carregar por último. */
+
+/* ---------- colunas laterais (resultados, propagandas) ---------- */
+.layout-site { gap: clamp(.6rem, 1.4vw, 1.5rem); padding: 0 clamp(.5rem, 1.4vw, 1.5rem); align-items: start; }
+.layout-site.tem-esq { grid-template-columns: clamp(9rem, 14vw, 16rem) minmax(0, 1fr); }
+.layout-site.tem-dir { grid-template-columns: minmax(0, 1fr) clamp(9rem, 15vw, 17rem); }
+.layout-site.tem-esq.tem-dir { grid-template-columns: clamp(9rem, 14vw, 16rem) minmax(0, 1fr) clamp(9rem, 15vw, 17rem); }
+.lado { top: 0; padding-top: .5rem; max-height: 100vh; overflow-y: auto; scrollbar-width: thin; }
+.lado-titulo { font-size: clamp(.68rem, .85vw, .85rem); margin: 0 0 .5rem; }
+.lot-card { padding: clamp(.45rem, .8vw, .85rem); border-radius: 10px; margin-bottom: clamp(.4rem, .7vw, .75rem); }
+.lot-card h3 { font-size: clamp(.8rem, 1.1vw, 1.1rem); }
+.lot-card small { font-size: clamp(.62rem, .85vw, .82rem); }
+.lot-bolas { gap: clamp(2px, .3vw, 4px); margin: .4rem 0; }
+.lot-bola { width: clamp(1rem, 1.55vw, 1.55rem); height: clamp(1rem, 1.55vw, 1.55rem); font-size: clamp(.5rem, .78vw, .78rem); }
+.lot-status { font-size: clamp(.65rem, .9vw, .9rem); }
+.slot-lateral_esq .slot-quadro { max-width: 100%; }
+
+/* ---------- conteúdo central ---------- */
+.painel { max-width: min(100%, 90rem); padding: clamp(.6rem, 2vw, 1.75rem); }
+.painel.loja { max-width: min(100%, 90rem); }
+.painel:has(.layout-participar) { max-width: min(100%, 90rem); }
+.painel .form:not(.linha) { max-width: 44rem; }
+.painel .cartao .form { max-width: none; }
+.abas { flex-wrap: wrap; overflow: visible; }
+.lista-usuarios { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr)); gap: .9rem; align-items: start; }
+.lista-usuarios .cartao { margin-bottom: 0; }
+.layout-participar { grid-template-columns: minmax(0, 1fr) clamp(15rem, 20vw, 22rem); }
+
+/* ---------- até 1100px: laterais viram faixa horizontal ---------- */
+@media (max-width: 1100px) {
+  .layout-site, .layout-site.tem-esq, .layout-site.tem-dir, .layout-site.tem-esq.tem-dir { grid-template-columns: minmax(0, 1fr); }
+  .lado { max-height: none; overflow-y: visible; padding-top: .4rem; }
+  .lado.esq { display: flex; gap: .5rem; overflow-x: auto; scrollbar-width: thin; padding-bottom: .3rem; }
+  .lado.esq .lot-card { flex: 0 0 8.5rem; margin-bottom: 0; }
+  .lado.esq .lot-bola { width: 1.05rem; height: 1.05rem; font-size: .55rem; }
+  .lado.esq .lot-card h3 { font-size: .8rem; } .lado.esq .lot-card small { font-size: .62rem; } .lado.esq .lot-status { font-size: .68rem; }
+  .lado.dir { max-width: 24rem; }
+}
+
+/* ---------- celular e telas pequenas: minimalista ---------- */
+@media (max-width: 700px) {
+  h1 { font-size: 1.35rem; } h2 { font-size: 1.15rem; } h3 { font-size: 1rem; }
+  .painel { padding: .5rem; }
+  .central { padding: 1.2rem .8rem; }
+  .cartao { padding: .7rem; margin-bottom: .6rem; border-radius: 10px; }
+  button { padding: .45rem .75rem; font-size: .9rem; }
+  input, select, textarea { padding: .5rem .6rem; }
+  .sub { font-size: .88rem; margin-bottom: .5rem; }
+  .acoes { gap: .4rem; }
+  .abas { flex-wrap: nowrap; overflow-x: auto; }
+  .abas button { padding: .5rem .7rem; font-size: .88rem; }
+  .topo { padding: .5rem .7rem; gap: .5rem; }
+  .topo .link-publico { display: none; }
+  .topo .quem { max-width: 45vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .78rem; }
+  .topo .link { padding: .25rem .55rem; font-size: .8rem; }
+  /* resultados: só nome, bolas e situação */
+  .lado.esq { gap: .4rem; }
+  .lado.esq .lot-card { flex-basis: 6.6rem; padding: .35rem; }
+  .lado.esq .lot-card small { display: none; }
+  .lado.esq .lot-bola { width: .9rem; height: .9rem; font-size: .5rem; }
+  .lado.esq .slot-extra { flex-basis: 9rem; }
+  .lado.dir { max-width: 100%; }
+  .layout-site { padding: 0 .3rem; gap: .4rem; }
+  .lista-usuarios { grid-template-columns: 1fr; }
+  .painel .form:not(.linha) { max-width: none; }
+}

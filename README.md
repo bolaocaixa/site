@@ -1,4 +1,4 @@
-# Loja Carga Rápida
+# BR Carregadores
 
 Site de vendas estático (HTML/CSS/JS) com backend em Google Apps Script + Planilhas.
 

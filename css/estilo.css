@@ -235,3 +235,6 @@ h4 { margin: 1rem 0 .4rem; font-size: .95rem; }
 .cartao > .botao-link { margin-top: .2rem; }
 
 .perigo-zona { border-color: #e3b5b2; }
+
+/* contas e recuperação de senha */
+.link-claro { background: transparent; border: 0; color: var(--verde-esc); text-decoration: underline; padding: .3rem; align-self: center; }

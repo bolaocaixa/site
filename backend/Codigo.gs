@@ -5,15 +5,17 @@
 // ===== Base: configuração, erros, utilitários =====
 var CFG = {
   ABAS: {
-    Usuarios: ['id', 'usuario', 'nome', 'hashSenha', 'papel', 'status', 'tentativas', 'bloqueadoAte', 'criadoEm', 'conviteId'],
+    Usuarios: ['id', 'usuario', 'nome', 'hashSenha', 'papel', 'status', 'tentativas', 'bloqueadoAte', 'criadoEm', 'conviteId', 'email'],
     Convites: ['id', 'codigoHash', 'papel', 'criadoPor', 'criadoEm', 'expiraEm', 'status', 'usadoPor', 'usadoEm'],
     Sessoes: ['tokenHash', 'userId', 'criadoEm', 'expiraEm'],
     Config: ['chave', 'valor'],
+    Recuperacoes: ['tokenHash', 'userId', 'criadoEm', 'expiraEm', 'usado'],
+    Registro: ['quando', 'quem', 'acao', 'alvo'],
     Banners: ['id', 'imagemId', 'titulo', 'link', 'ativo', 'ordem', 'criadoEm'],
     Imagens: ['id', 'parte', 'tipo', 'dados', 'criadoEm'],
     Produtos: ['id', 'nome', 'precoCentavos', 'precoOriginalCentavos', 'descricao', 'categoria', 'fotos', 'video', 'codigo', 'linkCompra', 'destaque', 'ativo', 'ordem', 'criadoEm', 'atualizadoEm']
   },
-  COLUNAS_NUM: ['tentativas', 'bloqueadoAte', 'criadoEm', 'expiraEm', 'usadoEm', 'atualizadoEm',
+  COLUNAS_NUM: ['usado', 'quando', 'tentativas', 'bloqueadoAte', 'criadoEm', 'expiraEm', 'usadoEm', 'atualizadoEm',
     'parte', 'ordem', 'ativo', 'precoCentavos', 'precoOriginalCentavos', 'destaque'],
   SESSAO_MS: 7 * 24 * 3600 * 1000,
   MAX_TENTATIVAS: 5,
@@ -265,6 +267,7 @@ function criarConviteInterno(papel, criadoPor, horas) {
 
 function criarConvite(admin, d) {
   return comLock(function () {
+    if (d.papel === 'admin' && admin.papel !== 'supremo') throw erroNegocio('Só o Administrador Supremo pode convidar administradores.');
     return criarConviteInterno(d.papel || 'admin', admin.id, d.validadeHoras);
   });
 }
@@ -305,7 +308,7 @@ function criarSessaoInterna(userId, agora) {
 }
 
 function usuarioPublico(u) {
-  return { id: u.id, usuario: u.usuario, nome: u.nome, papel: u.papel };
+  return { id: u.id, usuario: u.usuario, nome: u.nome, papel: u.papel, email: u.email || '' };
 }
 
 function autenticar(token) {
@@ -322,14 +325,14 @@ function autenticar(token) {
 
 function exigirAdmin(token) {
   var u = autenticar(token);
-  if (u.papel !== 'admin') throw erroNegocio('Acesso restrito ao administrador.');
+  if (!ehAdminPapel(u.papel)) throw erroNegocio('Acesso restrito ao administrador.');
   return u;
 }
 
 /** Administrador principal OU administrador de propagandas (papel 'publicidade'). */
 function exigirAdminOuPublicidade(token) {
   var u = autenticar(token);
-  if (u.papel !== 'admin' && u.papel !== 'publicidade') throw erroNegocio('Acesso restrito aos administradores.');
+  if (!ehAdminPapel(u.papel) && u.papel !== 'publicidade') throw erroNegocio('Acesso restrito aos administradores.');
   return u;
 }
 
@@ -339,6 +342,8 @@ function cadastrar(d) {
   validarUsuario(usuario);
   var nome = limparTexto(d.nome, 60);
   if (nome.length < 2) throw erroNegocio('Informe seu nome (mínimo 2 caracteres).');
+  var email = normalizarEmail(d.email);
+  validarEmail(email);
   validarSenha(d.senha, usuario);
 
   var cod = normalizarCodigo(d.codigoConvite);
@@ -357,17 +362,18 @@ function cadastrar(d) {
     if (!conv || conv.status !== 'ativo' || conv.expiraEm < agora) throw conviteInvalido;
     var existe = lerTabela('Usuarios').some(function (u) { return u.usuario === usuario; });
     if (existe) throw erroNegocio('Este nome de usuário já está em uso.');
+    exigirEmailLivre(email, '');
     var id = novoId();
     inserir('Usuarios', {
       id: id, usuario: usuario, nome: nome, hashSenha: registro, papel: conv.papel, status: 'ativo',
-      tentativas: 0, bloqueadoAte: 0, criadoEm: agora, conviteId: conv.id
+      tentativas: 0, bloqueadoAte: 0, criadoEm: agora, conviteId: conv.id, email: email
     });
     conv.status = 'usado';
     conv.usadoPor = id;
     conv.usadoEm = agora;
     atualizar('Convites', conv._linha, conv);
     var token = criarSessaoInterna(id, agora);
-    return { token: token, usuario: { id: id, usuario: usuario, nome: nome, papel: conv.papel } };
+    return { token: token, usuario: { id: id, usuario: usuario, nome: nome, papel: conv.papel, email: email } };
   });
 }
 
@@ -431,6 +437,21 @@ var ACOES = {
   'cadastrar':             { nivel: 'publico', fn: function (d) { return cadastrar(d); } },
   'login':                 { nivel: 'publico', fn: function (d) { return login(d); } },
   'logout':                { nivel: 'publico', fn: function (d) { return logout(d); } },
+  'senha.solicitar':       { nivel: 'publico', fn: function (d) { return solicitarRecuperacao(d); } },
+  'senha.redefinir':       { nivel: 'publico', fn: function (d) { return redefinirPorToken(d); } },
+  'conta.obter':           { nivel: 'usuario', fn: function (d, u) { return minhaConta(u); } },
+  'conta.email':           { nivel: 'usuario', fn: function (d, u) { return salvarMeuEmail(u, d); } },
+  'conta.senha':           { nivel: 'usuario', fn: function (d, u) { return trocarMinhaSenha(u, d); } },
+  'admin.recuperacao.estado': { nivel: 'admin', fn: function () { return estadoRecuperacao(); } },
+  'admin.recuperacao.salvar': { nivel: 'admin', fn: function (d) { return salvarSiteUrl(d); } },
+  'admin.recuperacao.testar': { nivel: 'admin', fn: function (d, u) { return testarEmailRecuperacao(u); } },
+  'admin.usuarios.email':  { nivel: 'admin',   fn: function (d, u) { return definirEmailDeUsuario(u, d); } },
+  // apenas o Administrador Supremo
+  'supremo.usuarios.listar': { nivel: 'supremo', fn: function () { return listarUsuariosSupremo(); } },
+  'supremo.usuarios.criar':  { nivel: 'supremo', fn: function (d, u) { return criarUsuarioSupremo(u, d); } },
+  'supremo.usuarios.editar': { nivel: 'supremo', fn: function (d, u) { return editarUsuarioSupremo(u, d); } },
+  'supremo.usuarios.excluir': { nivel: 'supremo', fn: function (d, u) { return excluirUsuarioSupremo(u, d); } },
+  'supremo.registro':      { nivel: 'supremo', fn: function () { return listarRegistro(); } },
   'publico.config':        { nivel: 'publico', fn: function () { return configPublica(); } },
   'publico.contagem':      { nivel: 'publico', fn: function () { return lerContagem(); } },
   'publico.produtos':      { nivel: 'publico', fn: function () { return produtosPublicos(); } },
@@ -468,6 +489,7 @@ function despachar(corpo) {
     var usuario = null;
     if (def.nivel === 'usuario') usuario = autenticar(corpo.token);
     if (def.nivel === 'admin') usuario = exigirAdmin(corpo.token);
+    if (def.nivel === 'supremo') usuario = exigirSupremo(corpo.token);
     if (def.nivel === 'ads') usuario = exigirAdminOuPublicidade(corpo.token);
     return { ok: true, dados: def.fn(corpo, usuario), agora: RELOGIO.agora() };
   } catch (err) {
@@ -491,7 +513,7 @@ function doPost(e) {
   return responder(despachar(corpo));
 }
 
-var VERSAO_API = 'L1';
+var VERSAO_API = 'L2';
 
 /** Abrir a URL /exec no navegador mostra a versão do código que está realmente publicada. */
 function doGet() {
@@ -520,7 +542,7 @@ function configurar() {
 
 /** Alternativa por convite: gera o código do primeiro administrador (aparece no registro de execução). */
 function primeiroAdmin() {
-  var admins = lerTabela('Usuarios').filter(function (u) { return u.papel === 'admin'; });
+  var admins = lerTabela('Usuarios').filter(function (u) { return ehAdminPapel(u.papel); });
   if (admins.length > 0) {
     Logger.log('Já existe um administrador cadastrado. Nada foi criado.');
     return;
@@ -1130,7 +1152,7 @@ function salvarContagem(d) {
 // ----- aba Usuários (administrador principal) -----
 function listarUsuarios() {
   return lerTabela('Usuarios').map(function (u) {
-    return { id: u.id, usuario: u.usuario, nome: u.nome, papel: u.papel, status: u.status };
+    return { id: u.id, usuario: u.usuario, nome: u.nome, email: u.email || '', papel: u.papel, status: u.status };
   });
 }
 
@@ -1143,7 +1165,9 @@ function redefinirUsuario(admin, d) {
     var todos = lerTabela('Usuarios');
     var alvo = todos.filter(function (x) { return x.id === d.id; })[0];
     if (!alvo) throw erroNegocio('Conta não encontrada.');
-    if (alvo.id === admin.id) throw erroNegocio('Para a sua própria conta, peça a outro administrador.');
+    if (alvo.id === admin.id) throw erroNegocio('Para a sua própria conta, use "Minha conta" (ou peça ao Administrador Supremo).');
+    if (alvo.papel === 'supremo') throw erroNegocio('A conta do Administrador Supremo só pode ser alterada por ele mesmo.');
+    if (alvo.papel === 'admin' && admin.papel !== 'supremo') throw erroNegocio('Só o Administrador Supremo altera a conta de outro administrador.');
     if (todos.some(function (x) { return x.usuario === usuario && x.id !== alvo.id; })) throw erroNegocio('Este nome de usuário já está em uso.');
     alvo.usuario = usuario;
     alvo.hashSenha = registro;
@@ -1155,6 +1179,369 @@ function redefinirUsuario(admin, d) {
       .forEach(function (s) { removerLinha('Sessoes', s._linha); });
     return { id: alvo.id, usuario: alvo.usuario };
   });
+}
+
+// ======================= Contas: e-mail, recuperação de senha e Administrador Supremo =======================
+// ===== Papéis: 'supremo' (tudo, inclusive contas), 'admin', 'publicidade' =====
+var SISTEMA_NOME = 'BR Carregadores';
+var PAGINA_ENTRADA = 'admin.html';          // página de login, relativa ao endereço do site
+var PAPEIS_VALIDOS = ['supremo', 'admin', 'publicidade'];
+var RECUP_VALIDADE_MS = 30 * 60 * 1000;     // o link vale 30 minutos
+var RECUP_MAX_POR_HORA = 3;                 // pedidos por conta por hora
+
+function ehAdminPapel(papel) { return papel === 'admin' || papel === 'supremo'; }
+
+function exigirSupremo(token) {
+  var u = autenticar(token);
+  if (u.papel !== 'supremo') throw erroNegocio('Acesso restrito ao Administrador Supremo.');
+  return u;
+}
+
+// ----- e-mail -----
+function normalizarEmail(e) {
+  return String(e === undefined || e === null ? '' : e).trim().toLowerCase();
+}
+
+function validarEmail(e) {
+  if (e.length > 120 || !/^[a-z0-9._%+\-]+@[a-z0-9\-]+(\.[a-z0-9\-]+)*\.[a-z]{2,}$/.test(e)) {
+    throw erroNegocio('Informe um e-mail válido.');
+  }
+}
+
+/** Chamar dentro de comLock. */
+function exigirEmailLivre(email, idIgnorar) {
+  if (lerTabela('Usuarios').some(function (u) { return u.email === email && u.id !== idIgnorar; })) {
+    throw erroNegocio('Este e-mail já está em uso por outra conta.');
+  }
+}
+
+function registrar(quem, acao, alvo) {
+  try {
+    inserir('Registro', { quando: RELOGIO.agora(), quem: quem ? quem.usuario : 'sistema', acao: acao, alvo: alvo || '' });
+    var t = lerTabela('Registro');
+    for (var i = 0; i < t.length - 300; i++) removerLinha('Registro', t[0]._linha); // guarda os 300 últimos
+  } catch (e) { console.error('Registro: ' + e); }
+}
+
+function mascararEmail(e) {
+  if (!e) return '';
+  var p = e.split('@');
+  return p[0].charAt(0) + '***@' + p[1];
+}
+
+function siteUrlConfigurada() {
+  return String(lerConfig()['site.url'] || '');
+}
+
+function normalizarSiteUrl(v) {
+  v = String(v === undefined || v === null ? '' : v).trim();
+  if (v === '') return '';
+  v = v.replace(/[?#].*$/, '').replace(/\/+$/, '');
+  v = v.replace(new RegExp('/' + (PAGINA_ENTRADA || 'index.html').replace('.', '\\.') + '$', 'i'), '').replace(/\/index\.html$/i, '');
+  if (!/^https:\/\/[a-z0-9.\-]+(:\d+)?(\/[A-Za-z0-9._~\-\/]*)?$/i.test(v) || v.length > 200) {
+    throw erroNegocio('Informe o endereço do site começando com https:// (exemplo: https://brcarregadores.github.io).');
+  }
+  return v;
+}
+
+function linkDeRecuperacao(token) {
+  return siteUrlConfigurada() + '/' + PAGINA_ENTRADA + '?reset=' + token;
+}
+
+function enviarEmail(para, assunto, texto) {
+  MailApp.sendEmail({ to: para, subject: assunto, body: texto, name: SISTEMA_NOME });
+}
+
+function emailsRestantes() {
+  try { return MailApp.getRemainingDailyQuota(); } catch (e) { return -1; }
+}
+
+/** Rode UMA vez no editor do Apps Script (Executar): pede a autorização de envio de e-mail e manda um teste para o dono. */
+function autorizarEmail() {
+  var dono = Session.getEffectiveUser().getEmail();
+  enviarEmail(dono, SISTEMA_NOME + ': envio de e-mail autorizado', 'Se você recebeu esta mensagem, a recuperação de senha por e-mail já pode funcionar.\nAgora crie uma NOVA VERSÃO da implantação (Implantar > Gerenciar implantações > editar > Nova versão).');
+  Logger.log('E-mail de teste enviado para ' + dono + '. Cota restante hoje: ' + emailsRestantes());
+}
+
+// ----- pedir e concluir a redefinição (qualquer pessoa, sem login) -----
+/** Resposta sempre igual: não revela se o usuário/e-mail existe. */
+function solicitarRecuperacao(d) {
+  var resposta = { enviado: true };
+  var ident = String(d.identificador === undefined || d.identificador === null ? '' : d.identificador).trim().toLowerCase();
+  if (!ident || ident.length > 120) return resposta;
+  try {
+    var u = lerTabela('Usuarios').filter(function (x) { return x.usuario === ident || (x.email && x.email === ident); })[0];
+    if (!u || u.status !== 'ativo' || !u.email) return resposta;
+    if (!siteUrlConfigurada()) { console.error('Recuperação: endereço do site (site.url) não configurado.'); return resposta; }
+    if (emailsRestantes() === 0) { console.error('Recuperação: cota diária de e-mails esgotada.'); return resposta; }
+    var token = aleatorioHex(48);
+    var pode = comLock(function () {
+      var agora = RELOGIO.agora();
+      var rec = lerTabela('Recuperacoes');
+      for (var i = rec.length - 1; i >= 0; i--) { if (rec[i].expiraEm < agora - 24 * 3600 * 1000) removerLinha('Recuperacoes', rec[i]._linha); }
+      var recentes = lerTabela('Recuperacoes').filter(function (r) { return r.userId === u.id && r.criadoEm > agora - 3600 * 1000; }).length;
+      if (recentes >= RECUP_MAX_POR_HORA) return false;
+      inserir('Recuperacoes', { tokenHash: sha256Hex('reset|' + token), userId: u.id, criadoEm: agora, expiraEm: agora + RECUP_VALIDADE_MS, usado: 0 });
+      return true;
+    });
+    if (!pode) return resposta;
+    enviarEmail(u.email, SISTEMA_NOME + ': redefinição de senha',
+      'Olá, ' + u.nome + '.\n\nRecebemos um pedido para redefinir a senha do usuário "' + u.usuario + '".\n' +
+      'Para criar uma nova senha, abra o link abaixo (vale por 30 minutos e só funciona uma vez):\n\n' + linkDeRecuperacao(token) +
+      '\n\nSe não foi você, ignore esta mensagem: sua senha continua a mesma.');
+  } catch (e) {
+    console.error('Recuperação falhou: ' + (e && e.stack ? e.stack : e));
+  }
+  return resposta;
+}
+
+function redefinirPorToken(d) {
+  var invalido = erroNegocio('Link inválido ou expirado. Peça um novo.');
+  var token = String(d.token === undefined || d.token === null ? '' : d.token);
+  if (!/^[0-9a-f]{48}$/.test(token)) throw invalido;
+  var th = sha256Hex('reset|' + token);
+  var achar = function () { return lerTabela('Recuperacoes').filter(function (r) { return r.tokenHash === th; })[0]; };
+  var pre = achar();
+  if (!pre || pre.usado === 1 || pre.expiraEm < RELOGIO.agora()) throw invalido;
+  var alvo0 = lerTabela('Usuarios').filter(function (x) { return x.id === pre.userId; })[0];
+  if (!alvo0 || alvo0.status !== 'ativo') throw invalido;
+  validarSenha(d.senha, alvo0.usuario);
+  var registro = hashSenha(d.senha, iteracoesHash()); // custo alto: fora do lock
+  return comLock(function () {
+    var rec = achar();
+    if (!rec || rec.usado === 1 || rec.expiraEm < RELOGIO.agora()) throw invalido;
+    var alvo = lerTabela('Usuarios').filter(function (x) { return x.id === rec.userId; })[0];
+    if (!alvo || alvo.status !== 'ativo') throw invalido;
+    alvo.hashSenha = registro;
+    alvo.tentativas = 0;
+    alvo.bloqueadoAte = 0;
+    atualizar('Usuarios', alvo._linha, alvo);
+    lerTabela('Recuperacoes').filter(function (r) { return r.userId === alvo.id && r.usado !== 1; }).forEach(function (r) {
+      r.usado = 1; atualizar('Recuperacoes', r._linha, r);
+    });
+    removerSessoesDe(alvo.id);
+    registrar(alvo, 'senha redefinida por e-mail', alvo.usuario);
+    return { redefinida: true, usuario: alvo.usuario };
+  });
+}
+
+/** Chamar dentro de comLock. */
+function removerSessoesDe(userId) {
+  lerTabela('Sessoes').filter(function (s) { return s.userId === userId; })
+    .sort(function (a, b) { return b._linha - a._linha; })
+    .forEach(function (s) { removerLinha('Sessoes', s._linha); });
+}
+
+// ----- minha conta (qualquer usuário logado) -----
+function minhaConta(u) {
+  var atual = lerTabela('Usuarios').filter(function (x) { return x.id === u.id; })[0] || u;
+  return { id: atual.id, usuario: atual.usuario, nome: atual.nome, papel: atual.papel, email: atual.email || '' };
+}
+
+function verificarSenhaAtual(u, senha) {
+  if (typeof senha !== 'string' || !verificarSenha(senha, u.hashSenha)) throw erroNegocio('A senha atual não confere.');
+}
+
+function salvarMeuEmail(u, d) {
+  var email = normalizarEmail(d.email);
+  validarEmail(email);
+  verificarSenhaAtual(u, d.senhaAtual);
+  return comLock(function () {
+    exigirEmailLivre(email, u.id);
+    var alvo = lerTabela('Usuarios').filter(function (x) { return x.id === u.id; })[0];
+    alvo.email = email;
+    atualizar('Usuarios', alvo._linha, alvo);
+    registrar(u, 'alterou o próprio e-mail', u.usuario);
+    return minhaConta(alvo);
+  });
+}
+
+function trocarMinhaSenha(u, d) {
+  verificarSenhaAtual(u, d.senhaAtual);
+  validarSenha(d.novaSenha, u.usuario);
+  var registro = hashSenha(d.novaSenha, iteracoesHash());
+  return comLock(function () {
+    var alvo = lerTabela('Usuarios').filter(function (x) { return x.id === u.id; })[0];
+    alvo.hashSenha = registro;
+    atualizar('Usuarios', alvo._linha, alvo);
+    registrar(u, 'trocou a própria senha', u.usuario);
+    return { trocada: true };
+  });
+}
+
+// ----- configuração da recuperação (administradores) -----
+function estadoRecuperacao() {
+  var u = lerTabela('Usuarios');
+  return { siteUrl: siteUrlConfigurada(), semEmail: u.filter(function (x) { return !x.email; }).length, emailsRestantes: emailsRestantes() };
+}
+
+function salvarSiteUrl(d) {
+  var v = normalizarSiteUrl(d.siteUrl);
+  comLock(function () { gravarConfig({ 'site.url': v }); });
+  return estadoRecuperacao();
+}
+
+function testarEmailRecuperacao(u) {
+  var atual = lerTabela('Usuarios').filter(function (x) { return x.id === u.id; })[0];
+  if (!atual || !atual.email) throw erroNegocio('Cadastre primeiro o seu e-mail em "Minha conta".');
+  if (!siteUrlConfigurada()) throw erroNegocio('Informe antes o endereço do site.');
+  try {
+    enviarEmail(atual.email, SISTEMA_NOME + ': e-mail de teste', 'Teste da recuperação de senha. Link de exemplo: ' + linkDeRecuperacao('0'.repeat(48)) + '\n(este link de exemplo não funciona)');
+  } catch (e) {
+    throw erroNegocio('Não foi possível enviar. O dono do sistema precisa executar autorizarEmail() no Apps Script e criar uma nova versão da implantação.');
+  }
+  return { enviadoPara: mascararEmail(atual.email) };
+}
+
+/** O administrador comum só cadastra o e-mail de contas que não são de administrador. O Supremo, de qualquer uma. */
+function definirEmailDeUsuario(quem, d) {
+  var email = normalizarEmail(d.email);
+  validarEmail(email);
+  return comLock(function () {
+    var alvo = lerTabela('Usuarios').filter(function (x) { return x.id === d.id; })[0];
+    if (!alvo) throw erroNegocio('Conta não encontrada.');
+    if (quem.papel !== 'supremo' && ehAdminPapel(alvo.papel)) throw erroNegocio('Só o Administrador Supremo altera o e-mail de administradores.');
+    exigirEmailLivre(email, alvo.id);
+    alvo.email = email;
+    atualizar('Usuarios', alvo._linha, alvo);
+    registrar(quem, 'definiu e-mail', alvo.usuario);
+    return { id: alvo.id, email: email };
+  });
+}
+
+// ----- Administrador Supremo: gerenciar qualquer conta -----
+function usuarioTemDados(userId) {
+  return false;
+}
+
+function listarUsuariosSupremo() {
+  return lerTabela('Usuarios').map(function (u) {
+    return { id: u.id, usuario: u.usuario, nome: u.nome, email: u.email || '', papel: u.papel, status: u.status, criadoEm: u.criadoEm };
+  });
+}
+
+function validarPapel(p) {
+  if (PAPEIS_VALIDOS.indexOf(p) === -1) throw erroNegocio('Papel inválido.');
+}
+
+function criarUsuarioSupremo(sup, d) {
+  var usuario = normalizarUsuario(d.usuario);
+  validarUsuario(usuario);
+  var nome = limparTexto(d.nome, 60);
+  if (nome.length < 2) throw erroNegocio('Informe o nome (mínimo 2 caracteres).');
+  var email = normalizarEmail(d.email);
+  validarEmail(email);
+  validarPapel(d.papel);
+  validarSenha(d.senha, usuario);
+  var registro = hashSenha(d.senha, iteracoesHash());
+  return comLock(function () {
+    if (lerTabela('Usuarios').some(function (x) { return x.usuario === usuario; })) throw erroNegocio('Este nome de usuário já está em uso.');
+    exigirEmailLivre(email, '');
+    var id = novoId();
+    inserir('Usuarios', { id: id, usuario: usuario, nome: nome, hashSenha: registro, papel: d.papel, status: 'ativo',
+      tentativas: 0, bloqueadoAte: 0, criadoEm: RELOGIO.agora(), conviteId: '', email: email });
+    registrar(sup, 'criou conta (' + d.papel + ')', usuario);
+    return { id: id, usuario: usuario };
+  });
+}
+
+function editarUsuarioSupremo(sup, d) {
+  var senha = (d.senha === undefined || d.senha === null || d.senha === '') ? null : d.senha;
+  var registro = null;
+  if (senha !== null) {
+    var alvo0 = lerTabela('Usuarios').filter(function (x) { return x.id === d.id; })[0];
+    if (!alvo0) throw erroNegocio('Conta não encontrada.');
+    validarSenha(senha, d.usuario !== undefined ? normalizarUsuario(d.usuario) : alvo0.usuario);
+    registro = hashSenha(senha, iteracoesHash()); // custo alto: fora do lock
+  }
+  return comLock(function () {
+    var todos = lerTabela('Usuarios');
+    var alvo = todos.filter(function (x) { return x.id === d.id; })[0];
+    if (!alvo) throw erroNegocio('Conta não encontrada.');
+    var propria = alvo.id === sup.id;
+    var mudou = [];
+    var derrubar = false;
+    if (d.nome !== undefined) {
+      var nome = limparTexto(d.nome, 60);
+      if (nome.length < 2) throw erroNegocio('Informe o nome (mínimo 2 caracteres).');
+      if (nome !== alvo.nome) { alvo.nome = nome; mudou.push('nome'); }
+    }
+    if (d.usuario !== undefined) {
+      var usuario = normalizarUsuario(d.usuario);
+      validarUsuario(usuario);
+      if (usuario !== alvo.usuario) {
+        if (todos.some(function (x) { return x.usuario === usuario && x.id !== alvo.id; })) throw erroNegocio('Este nome de usuário já está em uso.');
+        alvo.usuario = usuario; mudou.push('usuário'); derrubar = !propria;
+      }
+    }
+    if (d.email !== undefined) {
+      var email = normalizarEmail(d.email);
+      validarEmail(email);
+      if (email !== alvo.email) { exigirEmailLivre(email, alvo.id); alvo.email = email; mudou.push('e-mail'); }
+    }
+    if (d.papel !== undefined && d.papel !== alvo.papel) {
+      validarPapel(d.papel);
+      if (propria) throw erroNegocio('Você não pode alterar o papel da própria conta.');
+      alvo.papel = d.papel; mudou.push('papel → ' + d.papel); derrubar = true;
+    }
+    if (d.status !== undefined && d.status !== alvo.status) {
+      if (['ativo', 'bloqueado'].indexOf(d.status) === -1) throw erroNegocio('Situação inválida.');
+      if (propria) throw erroNegocio('Você não pode bloquear a própria conta.');
+      alvo.status = d.status; mudou.push('situação → ' + d.status); derrubar = true;
+    }
+    if (registro !== null) {
+      alvo.hashSenha = registro; alvo.tentativas = 0; alvo.bloqueadoAte = 0;
+      mudou.push('senha'); derrubar = derrubar || !propria;
+    }
+    if (mudou.length === 0) return { id: alvo.id, alterado: false };
+    atualizar('Usuarios', alvo._linha, alvo);
+    if (derrubar) removerSessoesDe(alvo.id);
+    registrar(sup, 'editou conta: ' + mudou.join(', '), alvo.usuario);
+    return { id: alvo.id, alterado: true, mudou: mudou };
+  });
+}
+
+function excluirUsuarioSupremo(sup, d) {
+  return comLock(function () {
+    var alvo = lerTabela('Usuarios').filter(function (x) { return x.id === d.id; })[0];
+    if (!alvo) throw erroNegocio('Conta não encontrada.');
+    if (alvo.id === sup.id) throw erroNegocio('Você não pode excluir a própria conta.');
+    if (normalizarUsuario(d.confirmar) !== alvo.usuario) throw erroNegocio('Para excluir, digite exatamente o nome de usuário da conta.');
+    if (usuarioTemDados(alvo.id)) throw erroNegocio('Esta conta tem registros no sistema. Para não perder o histórico, bloqueie-a em vez de excluir.');
+    removerSessoesDe(alvo.id);
+    lerTabela('Recuperacoes').filter(function (r) { return r.userId === alvo.id; })
+      .sort(function (a, b) { return b._linha - a._linha; })
+      .forEach(function (r) { removerLinha('Recuperacoes', r._linha); });
+    removerLinha('Usuarios', alvo._linha);
+    registrar(sup, 'excluiu conta (' + alvo.papel + ')', alvo.usuario);
+    return { id: alvo.id, excluido: true };
+  });
+}
+
+function listarRegistro() {
+  return lerTabela('Registro').slice(-100).reverse().map(function (r) {
+    return { quando: r.quando, quem: r.quem, acao: r.acao, alvo: r.alvo };
+  });
+}
+
+/**
+ * Transforma uma conta que já existe em Administrador Supremo (rode no editor do Apps Script).
+ * 1) Escreva o usuário abaixo.  2) Execute tornarSupremo().  3) Entre no painel e confira.
+ */
+var USUARIO_SUPREMO = '';
+
+function tornarSupremo() {
+  var usuario = normalizarUsuario(USUARIO_SUPREMO);
+  if (!usuario) throw new Error('Preencha USUARIO_SUPREMO antes de executar.');
+  comLock(function () {
+    var u = lerTabela('Usuarios').filter(function (x) { return x.usuario === usuario; })[0];
+    if (!u) throw new Error('Usuário não encontrado: ' + usuario);
+    u.papel = 'supremo'; u.status = 'ativo';
+    atualizar('Usuarios', u._linha, u);
+    removerSessoesDe(u.id);
+    registrar(null, 'tornou-se Supremo (editor do script)', usuario);
+  });
+  Logger.log('"' + usuario + '" agora é Administrador Supremo. Apague o nome de USUARIO_SUPREMO.');
 }
 
 // ======================= Preparação da NOVA planilha e dos administradores =======================
@@ -1188,8 +1575,9 @@ function configurarPlanilhaPorId() {
  * Quem já existe (mesmo usuário) é ignorado.
  */
 var SETUP_ADMINISTRADORES = [
-  { papel: 'admin',       usuario: '', nome: '', senha: '' },  // produtos, convites e usuários
-  { papel: 'publicidade', usuario: '', nome: '', senha: '' }   // propagandas, banners e relógio de ofertas
+  { papel: 'supremo',     usuario: '', nome: '', email: '', senha: '' },  // Administrador Supremo: gerencia todas as contas
+  { papel: 'admin',       usuario: '', nome: '', email: '', senha: '' },  // produtos, convites e usuários
+  { papel: 'publicidade', usuario: '', nome: '', email: '', senha: '' }   // propagandas, banners e relógio de ofertas
 ];
 
 function criarAdministradores() {
@@ -1200,6 +1588,8 @@ function criarAdministradores() {
     validarUsuario(usuario);
     var nome = limparTexto(a.nome, 60);
     if (nome.length < 2) throw erroNegocio('Informe o nome de ' + usuario + ' (mínimo 2 caracteres).');
+    var email = normalizarEmail(a.email);
+    validarEmail(email);
     validarSenha(a.senha, usuario);
     var registro = hashSenha(a.senha, iteracoesHash());
     comLock(function () {
@@ -1209,7 +1599,7 @@ function criarAdministradores() {
       }
       inserir('Usuarios', {
         id: novoId(), usuario: usuario, nome: nome, hashSenha: registro, papel: a.papel, status: 'ativo',
-        tentativas: 0, bloqueadoAte: 0, criadoEm: RELOGIO.agora(), conviteId: ''
+        tentativas: 0, bloqueadoAte: 0, criadoEm: RELOGIO.agora(), conviteId: '', email: email
       });
       criados.push(usuario + ' (' + a.papel + ')');
     });

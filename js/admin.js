@@ -10,7 +10,7 @@
   var raiz = document.getElementById('app');
 
   var estado = {
-    usuario: null, abaAcesso: 'entrar', codigoConvite: '', aba: 'produtos',
+    usuario: null, abaAcesso: 'entrar', codigoConvite: '', tokenReset: '', aba: 'produtos',
     cfg: null, produtos: null, edicaoProduto: null, convites: [], novoConvite: null
   };
 
@@ -39,6 +39,7 @@
   }
 
   var ctxAdmin = {
+    papeis: ['supremo', 'admin', 'publicidade'],
     estado: estado, API: API, U: U, UI: window.BolaoUI, Img: Img,
     executar: function () { return executar.apply(null, arguments); },
     renderPainel: function () { renderPainel(); },
@@ -47,6 +48,7 @@
 
   // ---------- acesso ----------
   function renderAcesso() {
+    if (estado.abaAcesso === 'esqueci' || estado.abaAcesso === 'redefinir') return renderRecuperacao();
     var abaEntrar = estado.abaAcesso === 'entrar';
     var erroEntrar = h('p', { class: 'erro-form', role: 'alert' });
     var erroCad = h('p', { class: 'erro-form', role: 'alert' });
@@ -54,10 +56,12 @@
       campo('Usuário', h('input', { name: 'usuario', autocomplete: 'username', autocapitalize: 'none', required: true })),
       campo('Senha', h('input', { name: 'senha', type: 'password', autocomplete: 'current-password', required: true })),
       erroEntrar,
-      h('button', { class: 'primario', type: 'submit' }, 'Entrar'));
+      h('button', { class: 'primario', type: 'submit' }, 'Entrar'),
+      h('button', { class: 'link-claro', type: 'button', onclick: function () { estado.abaAcesso = 'esqueci'; renderAcesso(); } }, 'Esqueci minha senha'));
     var formCad = h('form', { class: 'form', onsubmit: onCadastrar },
       campo('Código do convite', h('input', { name: 'convite', value: estado.codigoConvite, autocapitalize: 'characters', required: true })),
       campo('Seu nome', h('input', { name: 'nome', autocomplete: 'name', required: true })),
+      campo('E-mail', h('input', { name: 'email', type: 'email', autocomplete: 'email', required: true }), 'Usado para recuperar a senha se você esquecer.'),
       campo('Usuário', h('input', { name: 'usuario', autocomplete: 'username', autocapitalize: 'none', required: true }),
         '3 a 30 caracteres: letras minúsculas, números, ponto, hífen ou sublinhado.'),
       campo('Senha', h('input', { name: 'senha', type: 'password', autocomplete: 'new-password', minlength: 8, required: true }), 'Mínimo de 8 caracteres.'),
@@ -93,7 +97,7 @@
       executar(async function () {
         var r = await API.chamar('cadastrar', {
           codigoConvite: f.elements.convite.value, nome: f.elements.nome.value,
-          usuario: f.elements.usuario.value, senha: f.elements.senha.value
+          usuario: f.elements.usuario.value, email: f.elements.email.value, senha: f.elements.senha.value
         });
         estado.codigoConvite = '';
         await abrirPainel(r);
@@ -101,8 +105,26 @@
     }
   }
 
+  function renderRecuperacao() {
+    var C = window.BolaoConta;
+    var voltar = function () { estado.abaAcesso = 'entrar'; estado.tokenReset = ''; renderAcesso(); };
+    var formulario = estado.abaAcesso === 'esqueci'
+      ? C.formEsqueci({ API: API, executar: executar, voltar: voltar })
+      : C.formRedefinir({ API: API, executar: executar, token: estado.tokenReset, concluido: function (usuario) {
+        estado.abaAcesso = 'entrar';
+        estado.tokenReset = '';
+        renderAcesso();
+        aviso('Senha alterada. Entre com a nova senha' + (usuario ? ' (usuário: ' + usuario + ')' : '') + '.');
+      } });
+    montar(h('main', { class: 'central' },
+      h('h1', {}, estado.abaAcesso === 'esqueci' ? 'Esqueci minha senha' : 'Nova senha'),
+      formulario,
+      estado.abaAcesso === 'redefinir' ? h('button', { class: 'link-claro', type: 'button', onclick: voltar }, 'Voltar ao login') : null));
+  }
+
   // ---------- painel ----------
-  function ehAdmin() { return estado.usuario && estado.usuario.papel === 'admin'; }
+  function ehSupremo() { return estado.usuario && estado.usuario.papel === 'supremo'; }
+  function ehAdmin() { return estado.usuario && (estado.usuario.papel === 'admin' || estado.usuario.papel === 'supremo'); }
 
   async function abrirPainel(r) {
     API.guardarToken(r.token);
@@ -133,23 +155,25 @@
   function renderPainel() {
     var admin = ehAdmin();
     var abas = admin
-      ? [['produtos', 'Produtos'], ['propagandas', 'Propagandas e ofertas'], ['convites', 'Convites'], ['usuarios', 'Usuários']]
-      : [['propagandas', 'Propagandas e ofertas']];
+      ? [['produtos', 'Produtos'], ['propagandas', 'Propagandas e ofertas'], ['convites', 'Convites'], ehSupremo() ? ['contas', 'Contas (Supremo)'] : ['usuarios', 'Usuários'], ['conta', 'Minha conta']]
+      : [['propagandas', 'Propagandas e ofertas'], ['conta', 'Minha conta']];
     var A = window.BolaoAdmin;
     var conteudo;
     if (estado.aba === 'produtos' && admin) conteudo = A.telaProdutos(ctxAdmin);
     else if (estado.aba === 'convites' && admin) conteudo = telaConvites();
-    else if (estado.aba === 'usuarios' && admin) conteudo = A.telaUsuarios(ctxAdmin);
+    else if (estado.aba === 'usuarios' && admin && !ehSupremo()) conteudo = A.telaUsuarios(ctxAdmin);
+    else if (estado.aba === 'contas' && ehSupremo()) conteudo = window.BolaoConta.telaContas(ctxAdmin);
+    else if (estado.aba === 'conta') conteudo = window.BolaoConta.telaMinhaConta(ctxAdmin);
     else conteudo = A.telaPropagandas(ctxAdmin);
 
     montar(
       h('header', { class: 'topo' },
         h('strong', {}, 'Painel da Loja'),
-        h('span', { class: 'quem' }, estado.usuario.nome + (admin ? ' (administrador)' : ' (propagandas)')),
+        h('span', { class: 'quem' }, estado.usuario.nome + (ehSupremo() ? ' (Administrador Supremo)' : (admin ? ' (administrador)' : ' (propagandas)'))),
         h('a', { class: 'link-publico', href: 'index.html', target: '_blank', rel: 'noopener' }, 'Ver a loja'),
         h('button', { class: 'link', onclick: sair }, 'Sair')),
       h('main', { class: 'painel' },
-        abas.length > 1 ? h('div', { class: 'abas', role: 'tablist' }, abas.map(function (a) {
+        abas.length > 0 ? h('div', { class: 'abas', role: 'tablist' }, abas.map(function (a) {
           var ativa = estado.aba === a[0];
           return h('button', { role: 'tab', 'aria-selected': String(ativa), class: ativa ? 'ativa' : '',
             onclick: function () { estado.aba = a[0]; estado.edicaoProduto = null; renderPainel(); } }, a[1]);
@@ -164,7 +188,7 @@
   function telaConvites() {
     var nc = estado.novoConvite;
     var link = nc ? location.origin + location.pathname + '?convite=' + encodeURIComponent(nc.codigo) : '';
-    var selPapel = h('select', { name: 'papel' }, h('option', { value: 'publicidade' }, ROTULO_PAPEL.publicidade), h('option', { value: 'admin' }, ROTULO_PAPEL.admin));
+    var selPapel = h('select', { name: 'papel' }, h('option', { value: 'publicidade' }, ROTULO_PAPEL.publicidade), ehSupremo() ? h('option', { value: 'admin' }, ROTULO_PAPEL.admin) : null);
     var inHoras = h('input', { name: 'horas', type: 'number', min: 1, max: 720, step: 1, value: 72, required: true });
 
     return h('section', {},
@@ -208,6 +232,15 @@
     var cfg = window.BOLAO_CONFIG || {};
     if (!cfg.API_URL || /^COLE_AQUI/.test(cfg.API_URL)) {
       montar(h('main', { class: 'central' }, h('h1', {}, 'Configuração pendente'), h('p', {}, 'Edite o arquivo config.js e informe a URL do Apps Script (termina em /exec).')));
+      return;
+    }
+    var reset = new URLSearchParams(location.search).get('reset');
+    if (reset) {
+      API.guardarToken('');
+      estado.tokenReset = reset;
+      estado.abaAcesso = 'redefinir';
+      try { history.replaceState(null, '', location.pathname); } catch (e) { /* ignora */ }
+      renderAcesso();
       return;
     }
     var conv = new URLSearchParams(location.search).get('convite');
