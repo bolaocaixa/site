@@ -3,6 +3,7 @@
   'use strict';
 
   var CATEGORIAS_SUGERIDAS = ['Carregadores', 'Cabos'];
+  var ROTULO_TIPO = { link: 'Link de pagamento', mercadolivre: 'Mercado Livre', aliexpress: 'AliExpress (afiliado)', direto: 'Venda direta (Pix)' };
 
   function linkSeguro(l) { return typeof l === 'string' && /^https:\/\//i.test(l); }
 
@@ -37,7 +38,7 @@
                 miniatura(p.fotos[0], p.nome),
                 h('div', { class: 'info-prod' },
                   h('h3', {}, p.nome),
-                  h('p', { class: 'sub' }, U.centavosParaReais(p.precoCentavos) + (p.categoria ? ' · ' + p.categoria : '') + ' · ' + p.fotos.length + ' foto(s)' + (p.videoId || p.videoUrl ? ' · vídeo' : '')),
+                  h('p', { class: 'sub' }, (ROTULO_TIPO[p.tipo] || 'Link de pagamento') + ' · ' + U.centavosParaReais(p.precoCentavos) + (p.categoria ? ' · ' + p.categoria : '') + ' · ' + p.fotos.length + ' foto(s)' + (p.videoId || p.videoUrl ? ' · vídeo' : '')),
                   h('span', { class: 'selo ' + (p.ativo ? 'aberto' : 'rascunho') }, p.ativo ? 'Visível' : 'Oculto'),
                   p.destaque ? h('span', { class: 'selo rascunho', style: 'margin-left:.4rem' }, 'OFERTA') : null)),
               h('div', { class: 'acoes' },
@@ -77,6 +78,41 @@
       var inCat = h('input', { name: 'categoria', maxlength: 40, list: 'lista-categorias', placeholder: 'Carregadores', value: p ? p.categoria : '' });
       var inDesc = h('textarea', { name: 'descricao', maxlength: 3000, rows: 8, placeholder: 'Escreva aqui o texto do produto: potência, compatibilidade, o que acompanha, garantia...' }, p ? p.descricao : '');
       var inLink = h('input', { name: 'linkCompra', placeholder: 'https://', value: p ? p.linkCompra : '' });
+      var tipoAtual = p && p.tipo ? p.tipo : 'link';
+      var inTipo = h('select', { name: 'tipo', onchange: function () { tipoAtual = inTipo.value; atualizarTipo(); } },
+        Object.keys(ROTULO_TIPO).map(function (k) { return h('option', { value: k, selected: k === tipoAtual ? true : null }, ROTULO_TIPO[k]); }));
+      var fotosImportadas = [];
+      var areaImport = h('div', { class: 'import-area' });
+      var botaoImportar = h('button', { type: 'button', onclick: function (ev) {
+        erro.textContent = '';
+        ctx.executar(async function () {
+          var r = await API.chamar('admin.produtos.importar', { url: inLink.value });
+          if (r.nome) inNome.value = r.nome;
+          if (r.precoCentavos > 0) inPreco.value = U.centavosParaDecimalBR(r.precoCentavos);
+          if (r.descricao) inDesc.value = r.descricao;
+          fotosImportadas = r.fotos || [];
+          areaImport.replaceChildren(
+            h('div', { class: 'aviso-ok', role: 'status' }, 'Informações importadas de ' + r.origem + '. Confira os campos abaixo antes de salvar.'),
+            r.avisos && r.avisos.length ? h('ul', { class: 'avisos-import' }, r.avisos.map(function (a) { return h('li', {}, a); })) : null,
+            fotosImportadas.length ? h('div', { class: 'fotos-admin' }, fotosImportadas.map(function (u, i) { return h('div', { class: 'foto-admin' }, miniatura(u, 'Foto importada ' + (i + 1))); })) : null,
+            fotosImportadas.length ? h('p', { class: 'sub' }, fotosImportadas.length + ' foto(s) serão adicionadas ao salvar. As fotos continuam hospedadas no site de origem; se elas sumirem da loja, baixe-as e envie do computador.') : null,
+            h('p', { class: 'sub' }, 'O preço importado é o do anúncio. Ajuste o "Preço de venda" se for diferente.'));
+        }, ev.target, function (m) { erro.textContent = m; });
+      } }, 'Buscar informações do anúncio');
+      var blocoLink = campo('Link de compra', inLink, 'Link de pagamento do Mercado Pago ou PagSeguro, ou o link do anúncio na Shopee/AliExpress. Precisa começar com https://. Sem link, o botão aparece como indisponível.');
+      var notaDireto = h('p', { class: 'nota' }, 'Venda direta: ao clicar em "Comprar agora", o cliente informa o local e o horário da entrega. Você tem 12 horas para aprovar no painel (aba Pedidos). Depois da aprovação, o QR Code do Pix aparece para ele. Configure a chave Pix na aba Pedidos.');
+      var notaImport = h('p', { class: 'sub' });
+      function atualizarTipo() {
+        var direto = tipoAtual === 'direto', importavel = tipoAtual === 'mercadolivre' || tipoAtual === 'aliexpress';
+        blocoLink.style.display = direto ? 'none' : '';
+        notaDireto.style.display = direto ? '' : 'none';
+        botaoImportar.style.display = importavel ? '' : 'none';
+        areaImport.style.display = importavel ? '' : 'none';
+        notaImport.textContent = tipoAtual === 'mercadolivre' ? 'Cole o link do anúncio do Mercado Livre (ou o seu link de afiliado meli.la) e clique em "Buscar informações".'
+          : (tipoAtual === 'aliexpress' ? 'Cole o link do produto no AliExpress (ou o seu link de afiliado) e clique em "Buscar informações".' : '');
+        notaImport.style.display = importavel ? '' : 'none';
+        inLink.placeholder = importavel ? 'https://' + (tipoAtual === 'mercadolivre' ? 'produto.mercadolivre.com.br/...' : 'pt.aliexpress.com/item/...') : 'https://';
+      }
       var inVideo = h('input', { name: 'video', placeholder: 'https://www.youtube.com/watch?v=... ou https://.../video.mp4', value: p ? (p.videoId ? 'https://www.youtube.com/watch?v=' + p.videoId : p.videoUrl) : '' });
       var inCodigo = h('textarea', { name: 'codigo', rows: 5, maxlength: 6000, spellcheck: 'false', class: 'codigo' }, p ? p.codigo : '');
       var inDestaque = h('input', { type: 'checkbox', name: 'destaque', checked: p ? p.destaque : false });
@@ -94,7 +130,7 @@
         }
         var corpo = {
           nome: inNome.value, precoCentavos: preco, precoOriginalCentavos: orig, categoria: inCat.value, descricao: inDesc.value,
-          linkCompra: inLink.value, video: inVideo.value, codigo: inCodigo.value, destaque: inDestaque.checked, ativo: inAtivo.checked
+          tipo: tipoAtual, fotosLinks: fotosImportadas, linkCompra: inLink.value, video: inVideo.value, codigo: inCodigo.value, destaque: inDestaque.checked, ativo: inAtivo.checked
         };
         if (p) corpo.id = p.id;
         ctx.executar(async function () {
@@ -102,7 +138,7 @@
           aplicar(r);
           var salvo = r.produtos.filter(function (x) { return x.id === r.id; })[0];
           estado.edicaoProduto = { produto: salvo };
-          ctx.UI.aviso(p ? 'Produto salvo.' : 'Produto criado. Agora adicione as fotos abaixo.');
+          ctx.UI.aviso(p ? 'Produto salvo.' : 'Produto criado. Confira as fotos abaixo.');
           ctx.renderPainel();
           window.scrollTo(0, 0);
         }, ev.target.querySelector('button[type=submit]'), function (m) { erro.textContent = m; });
@@ -110,12 +146,13 @@
 
       var form = h('form', { class: 'form form-prod', onsubmit: salvar },
         dl,
+        campo('Tipo de venda', inTipo, 'Como o cliente compra este produto.'),
+        notaDireto, notaImport, blocoLink, botaoImportar, areaImport,
         campo('Nome do produto', inNome),
         campo('Preço de venda (R$)', inPreco),
         campo('Preço "de" (R$), opcional', inOrig, 'Se preencher, aparece riscado com a porcentagem de desconto. Precisa ser maior que o preço de venda.'),
         campo('Categoria', inCat, 'Os clientes filtram a loja por categoria. Escolha uma da lista ou digite uma nova.'),
         campo('Texto do produto (escrito por você)', inDesc, 'As quebras de linha são mantidas. Até 3000 caracteres.'),
-        campo('Link de compra', inLink, 'Link de pagamento do Mercado Pago ou PagSeguro, ou o link do anúncio na Shopee/AliExpress. Precisa começar com https://. Sem link, o botão aparece como indisponível.'),
         campo('Vídeo (opcional)', inVideo, 'Link do YouTube, ou o link direto de um arquivo de vídeo .mp4 (por exemplo, o vídeo do anúncio no AliExpress). Deixe vazio para não mostrar vídeo.'),
         campo('Código de incorporação (opcional)', inCodigo, 'Para colar um script ou HTML de parceiro (por exemplo, um widget do AliExpress). Aparece na janela de detalhes, dentro de um quadro isolado e seguro. Até 6000 caracteres.'),
         h('label', { class: 'marcar' }, inDestaque, ' Mostrar o selo OFERTA no produto'),
@@ -125,6 +162,7 @@
           h('button', { class: 'primario', type: 'submit' }, p ? 'Salvar alterações' : 'Criar produto'),
           h('button', { type: 'button', onclick: function () { estado.edicaoProduto = null; ctx.renderPainel(); } }, 'Voltar à lista')));
 
+      atualizarTipo();
       return h('section', {},
         h('h2', {}, p ? 'Editar produto' : 'Novo produto'),
         h('div', { class: 'cartao' }, form),

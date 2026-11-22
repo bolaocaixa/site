@@ -13,10 +13,11 @@ var CFG = {
     Registro: ['quando', 'quem', 'acao', 'alvo'],
     Banners: ['id', 'imagemId', 'titulo', 'link', 'ativo', 'ordem', 'criadoEm'],
     Imagens: ['id', 'parte', 'tipo', 'dados', 'criadoEm'],
-    Produtos: ['id', 'nome', 'precoCentavos', 'precoOriginalCentavos', 'descricao', 'categoria', 'fotos', 'video', 'codigo', 'linkCompra', 'destaque', 'ativo', 'ordem', 'criadoEm', 'atualizadoEm']
+    Produtos: ['id', 'nome', 'precoCentavos', 'precoOriginalCentavos', 'descricao', 'categoria', 'fotos', 'video', 'codigo', 'linkCompra', 'destaque', 'ativo', 'ordem', 'criadoEm', 'atualizadoEm', 'tipo'],
+    Pedidos: ['id', 'tokenHash', 'produtoId', 'produtoNome', 'precoCentavos', 'nome', 'telefone', 'local', 'horario', 'obs', 'status', 'criadoEm', 'expiraEm', 'decididoEm', 'mensagem', 'pagoEm']
   },
   COLUNAS_NUM: ['usado', 'quando', 'tentativas', 'bloqueadoAte', 'criadoEm', 'expiraEm', 'usadoEm', 'atualizadoEm',
-    'parte', 'ordem', 'ativo', 'precoCentavos', 'precoOriginalCentavos', 'destaque'],
+    'parte', 'ordem', 'ativo', 'precoCentavos', 'precoOriginalCentavos', 'destaque', 'decididoEm', 'pagoEm'],
   SESSAO_MS: 7 * 24 * 3600 * 1000,
   MAX_TENTATIVAS: 5,
   BLOQUEIO_MS: 10 * 60 * 1000,
@@ -455,6 +456,16 @@ var ACOES = {
   'publico.config':        { nivel: 'publico', fn: function () { return configPublica(); } },
   'publico.contagem':      { nivel: 'publico', fn: function () { return lerContagem(); } },
   'publico.produtos':      { nivel: 'publico', fn: function () { return produtosPublicos(); } },
+  'pedido.criar':          { nivel: 'publico', fn: function (d) { return criarPedido(d); } },
+  'pedido.consultar':      { nivel: 'publico', fn: function (d) { return consultarPedido(d); } },
+  'pedido.cancelar':       { nivel: 'publico', fn: function (d) { return cancelarPedido(d); } },
+  'admin.produtos.importar': { nivel: 'admin', fn: function (d) { return importarAnuncio(d); } },
+  'admin.direto.obter':    { nivel: 'admin',   fn: function () { return lerDireto(); } },
+  'admin.direto.salvar':   { nivel: 'admin',   fn: function (d) { return salvarDireto(d); } },
+  'admin.pedidos.listar':  { nivel: 'admin',   fn: function () { return listarPedidosAdmin(); } },
+  'admin.pedidos.decidir': { nivel: 'admin',   fn: function (d, u) { return decidirPedido(u, d); } },
+  'admin.pedidos.pago':    { nivel: 'admin',   fn: function (d, u) { return marcarPedidoPago(u, d); } },
+  'admin.pedidos.excluir': { nivel: 'admin',   fn: function (d, u) { return excluirPedido(u, d); } },
   'imagem.obter':          { nivel: 'publico', fn: function (d) { return obterImagem(d); } },
   // nivel 'ads' = administrador principal ou administrador de propagandas
   'eu':                    { nivel: 'ads',     fn: function (d, u) { return usuarioPublico(u); } },
@@ -513,7 +524,7 @@ function doPost(e) {
   return responder(despachar(corpo));
 }
 
-var VERSAO_API = 'L2';
+var VERSAO_API = 'L3';
 
 /** Abrir a URL /exec no navegador mostra a versão do código que está realmente publicada. */
 function doGet() {
@@ -916,7 +927,7 @@ function produtoParaSaida(p) {
   return {
     id: p.id, nome: p.nome, precoCentavos: p.precoCentavos, precoOriginalCentavos: p.precoOriginalCentavos === '' ? 0 : p.precoOriginalCentavos,
     descricao: p.descricao, categoria: p.categoria, fotos: fotosDe(p), video: p.video, videoId: videoIdDe(p.video), videoUrl: videoArquivoDe(p.video),
-    codigo: p.codigo, linkCompra: p.linkCompra,
+    codigo: p.codigo, linkCompra: p.linkCompra, tipo: tipoDe(p),
     destaque: p.destaque === 1, ativo: p.ativo === 1, ordem: p.ordem
   };
 }
@@ -934,9 +945,10 @@ function produtosPublicos() {
   var lista = produtosOrdenados().filter(function (p) { return p.ativo === 1; }).map(function (p) {
     var s = produtoParaSaida(p);
     return { id: s.id, nome: s.nome, precoCentavos: s.precoCentavos, precoOriginalCentavos: s.precoOriginalCentavos, descricao: s.descricao,
-      categoria: s.categoria, fotos: s.fotos, videoId: s.videoId, videoUrl: s.videoUrl, codigo: s.codigo, linkCompra: s.linkCompra, destaque: s.destaque };
+      categoria: s.categoria, fotos: s.fotos, videoId: s.videoId, videoUrl: s.videoUrl, codigo: s.codigo, tipo: s.tipo,
+      linkCompra: s.tipo === 'direto' ? '' : s.linkCompra, destaque: s.destaque };
   });
-  return { produtos: lista };
+  return { produtos: lista, direto: { ativo: pixConfigurado(), horas: PEDIDO_HORAS } };
 }
 
 /**
@@ -1002,7 +1014,12 @@ function salvarProduto(d) {
   }
   var categoria = limparTexto(d.categoria, 40);
   var descricao = limparDescricao(d.descricao);
-  var link = validarLink(d.linkCompra);
+  var tipo = TIPOS_VENDA.indexOf(d.tipo) === -1 ? 'link' : d.tipo;
+  var link = validarLinkDoTipo(tipo, d.linkCompra);
+  var fotosNovas = [];
+  if (Array.isArray(d.fotosLinks)) {
+    d.fotosLinks.slice(0, CFG.MAX_FOTOS).forEach(function (u) { var v = validarLinkFoto(u); if (fotosNovas.indexOf(v) === -1) fotosNovas.push(v); });
+  }
   var video = normalizarVideo(d.video);
   var codigo = limparCodigoProduto(d.codigo);
   var destaque = d.destaque ? 1 : 0;
@@ -1016,7 +1033,12 @@ function salvarProduto(d) {
       var p = todos.filter(function (x) { return x.id === d.id; })[0];
       if (!p) throw erroNegocio('Produto não encontrado.');
       p.nome = nome; p.precoCentavos = preco; p.precoOriginalCentavos = original; p.descricao = descricao; p.categoria = categoria;
-      p.video = video; p.codigo = codigo; p.linkCompra = link; p.destaque = destaque; p.ativo = ativo; p.atualizadoEm = agora;
+      p.video = video; p.codigo = codigo; p.linkCompra = link; p.tipo = tipo; p.destaque = destaque; p.ativo = ativo; p.atualizadoEm = agora;
+      if (fotosNovas.length) {
+        var atuais = fotosDe(p);
+        fotosNovas.forEach(function (u) { if (atuais.length < CFG.MAX_FOTOS && atuais.indexOf(u) === -1) atuais.push(u); });
+        p.fotos = atuais.join('\n');
+      }
       atualizar('Produtos', p._linha, p);
       id = p.id;
     } else {
@@ -1024,8 +1046,8 @@ function salvarProduto(d) {
       id = novoId();
       var ordem = todos.reduce(function (m, x) { return Math.max(m, x.ordem || 0); }, 0) + 1;
       inserir('Produtos', {
-        id: id, nome: nome, precoCentavos: preco, precoOriginalCentavos: original, descricao: descricao, categoria: categoria, fotos: '',
-        video: video, codigo: codigo, linkCompra: link, destaque: destaque, ativo: ativo, ordem: ordem, criadoEm: agora, atualizadoEm: agora
+        id: id, nome: nome, precoCentavos: preco, precoOriginalCentavos: original, descricao: descricao, categoria: categoria, fotos: fotosNovas.join('\n'),
+        video: video, codigo: codigo, linkCompra: link, destaque: destaque, ativo: ativo, ordem: ordem, criadoEm: agora, atualizadoEm: agora, tipo: tipo
       });
     }
     var saida = listarProdutosAdmin();
@@ -1542,6 +1564,388 @@ function tornarSupremo() {
     registrar(null, 'tornou-se Supremo (editor do script)', usuario);
   });
   Logger.log('"' + usuario + '" agora é Administrador Supremo. Apague o nome de USUARIO_SUPREMO.');
+}
+
+// ======================= Vendas: tipo de venda, importar anúncio e venda direta (pedido + Pix) =======================
+var TIPOS_VENDA = ['link', 'mercadolivre', 'aliexpress', 'direto'];
+var PEDIDO_HORAS = 12;
+var PEDIDO_MS = PEDIDO_HORAS * 3600 * 1000;
+var HOST_ML = /(^|\.)(mercadolivre\.com(\.br)?|mercadolibre\.com|meli\.la)$/i;
+var HOST_ALI = /(^|\.)(aliexpress\.(com|us)|ali\.ski)$/i;
+
+function tipoDe(p) { return TIPOS_VENDA.indexOf(p.tipo) === -1 ? 'link' : p.tipo; }
+
+function hostDe(url) {
+  var m = /^https:\/\/([^\/:?#\s]+)/i.exec(String(url || ''));
+  return m ? m[1].toLowerCase() : '';
+}
+
+/** Confere o link do anúncio de acordo com o tipo de venda. */
+function validarLinkDoTipo(tipo, link) {
+  if (tipo === 'direto') return '';
+  var l = validarLink(link);
+  if (tipo === 'link') return l;
+  if (l === '') throw erroNegocio('Cole o link do anúncio.');
+  var host = hostDe(l);
+  if (tipo === 'mercadolivre' && !HOST_ML.test(host)) throw erroNegocio('O link precisa ser do Mercado Livre (mercadolivre.com.br ou meli.la).');
+  if (tipo === 'aliexpress' && !HOST_ALI.test(host)) throw erroNegocio('O link precisa ser do AliExpress (aliexpress.com, a.aliexpress.com ou s.click.aliexpress.com).');
+  return l;
+}
+
+// ----- importar as informações de um anúncio (Mercado Livre / AliExpress) -----
+function decodificarHtml(t) {
+  return String(t || '')
+    .replace(/&#x([0-9a-f]+);/gi, function (m, h) { return String.fromCharCode(parseInt(h, 16)); })
+    .replace(/&#(\d+);/g, function (m, n) { return String.fromCharCode(Number(n)); })
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
+}
+
+function metasDaPagina(html) {
+  var m = {};
+  var tags = html.match(/<meta\b[^>]*>/gi) || [];
+  tags.forEach(function (tag) {
+    var attrs = {};
+    tag.replace(/([a-zA-Z:_-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g, function (x, k, a, b) { attrs[k.toLowerCase()] = a !== undefined ? a : b; return x; });
+    var chave = (attrs.property || attrs.name || attrs.itemprop || '').toLowerCase();
+    if (chave && attrs.content !== undefined) { (m[chave] = m[chave] || []).push(decodificarHtml(attrs.content)); }
+  });
+  return m;
+}
+
+function produtosJsonLd(html) {
+  var out = [];
+  var blocos = html.match(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi) || [];
+  function visitar(o) {
+    if (!o || typeof o !== 'object') return;
+    if (Array.isArray(o)) { o.forEach(visitar); return; }
+    var t = o['@type'];
+    if (t === 'Product' || (Array.isArray(t) && t.indexOf('Product') !== -1)) out.push(o);
+    if (o['@graph']) visitar(o['@graph']);
+  }
+  blocos.forEach(function (b) {
+    var corpo = b.replace(/^<script\b[^>]*>/i, '').replace(/<\/script>$/i, '').trim();
+    try { visitar(JSON.parse(corpo)); } catch (e) { /* bloco inválido: ignora */ }
+  });
+  return out;
+}
+
+function precoParaCentavos(v) {
+  if (v === undefined || v === null || v === '') return 0;
+  if (typeof v === 'number') return isFinite(v) && v > 0 ? Math.round(v * 100) : 0;
+  var s = String(v).replace(/[^\d.,]/g, '');
+  if (s.indexOf(',') !== -1 && s.indexOf('.') !== -1) s = s.replace(/\./g, '').replace(',', '.');
+  else if (s.indexOf(',') !== -1) s = s.replace(',', '.');
+  var n = parseFloat(s);
+  return isFinite(n) && n > 0 ? Math.round(n * 100) : 0;
+}
+
+function urlAbsoluta(u, base) {
+  u = String(u || '').trim();
+  if (u.indexOf('//') === 0) u = 'https:' + u;
+  if (/^https:\/\//i.test(u)) return u;
+  if (/^\//.test(u)) { var h = hostDe(base); return h ? 'https://' + h + u : ''; }
+  return '';
+}
+
+function textoSemTags(t) {
+  return limparDescricao(decodificarHtml(String(t || '').replace(/<[^>]*>/g, ' ')).replace(/[ \t]+/g, ' '));
+}
+
+/** Lê nome, descrição, preço e fotos de uma página de anúncio (dados do próprio HTML: JSON-LD e metatags). */
+function extrairInfoAnuncio(html, urlFinal) {
+  html = String(html || '').substring(0, 900000);
+  var metas = metasDaPagina(html);
+  var m1 = function (k) { return (metas[k] || [])[0] || ''; };
+  var prod = produtosJsonLd(html)[0] || {};
+  var avisos = [];
+
+  var nome = String(prod.name || m1('og:title') || m1('twitter:title') || '').trim();
+  if (!nome) { var t = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html); nome = t ? decodificarHtml(t[1]).trim() : ''; }
+  nome = nome.replace(/\s*[|\-–—]\s*(Mercado\s*Livre|MercadoLivre|AliExpress)[^|]*$/i, '').replace(/\s+/g, ' ').substring(0, 100).trim();
+
+  var descricao = textoSemTags(prod.description || m1('og:description') || m1('description') || m1('twitter:description')).substring(0, 1500);
+
+  var oferta = prod.offers;
+  if (Array.isArray(oferta)) oferta = oferta[0];
+  oferta = oferta || {};
+  var moeda = String(oferta.priceCurrency || m1('product:price:currency') || m1('og:price:currency') || '').toUpperCase();
+  var preco = precoParaCentavos(oferta.price !== undefined ? oferta.price : (oferta.lowPrice !== undefined ? oferta.lowPrice : (m1('product:price:amount') || m1('og:price:amount') || m1('price'))));
+  if (preco && moeda && moeda !== 'BRL') {
+    avisos.push('O preço do anúncio está em ' + moeda + '. Digite o preço em reais.');
+    preco = 0;
+  }
+  if (!preco) avisos.push('Não consegui ler o preço. Digite o preço de venda.');
+
+  var imgs = [];
+  var img = prod.image;
+  if (img) {
+    (Array.isArray(img) ? img : [img]).forEach(function (i) { imgs.push(typeof i === 'string' ? i : (i && (i.url || i.contentUrl)) || ''); });
+  }
+  ['og:image', 'og:image:secure_url', 'twitter:image'].forEach(function (k) { (metas[k] || []).forEach(function (i) { imgs.push(i); }); });
+  var fotos = [];
+  imgs.forEach(function (i) {
+    var u = urlAbsoluta(i, urlFinal);
+    if (u && u.length <= 500 && !/\s/.test(u) && fotos.indexOf(u) === -1 && fotos.length < CFG.MAX_FOTOS) fotos.push(u);
+  });
+  if (fotos.length === 0) avisos.push('Não encontrei fotos. Envie ou cole os links das fotos.');
+  if (!descricao) avisos.push('Não encontrei a descrição. Escreva o texto do produto.');
+  return { nome: nome, descricao: descricao, precoCentavos: preco, fotos: fotos, moeda: moeda, origem: hostDe(urlFinal), avisos: avisos };
+}
+
+function hostPermitidoImportar(host) { return HOST_ML.test(host) || HOST_ALI.test(host); }
+
+/** Baixa a página seguindo os redirecionamentos à mão, só por sites do Mercado Livre e do AliExpress. */
+function baixarPagina(url) {
+  var atual = url;
+  for (var salto = 0; salto < 6; salto++) {
+    if (!hostPermitidoImportar(hostDe(atual))) throw erroNegocio('Só links do Mercado Livre e do AliExpress podem ser importados.');
+    var r = UrlFetchApp.fetch(atual, {
+      method: 'get', followRedirects: false, muteHttpExceptions: true,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+        'Accept-Language': 'pt-BR,pt;q=0.9', 'Accept': 'text/html,application/xhtml+xml'
+      }
+    });
+    var cod = r.getResponseCode();
+    var h = r.getHeaders() || {};
+    var loc = h.Location || h.location;
+    if (cod >= 300 && cod < 400 && loc) { atual = urlAbsoluta(loc, atual) || ''; if (!atual) break; continue; }
+    if (cod !== 200) throw erroNegocio('O site não deixou ler o anúncio (código ' + cod + '). Preencha os dados à mão.');
+    var corpo = r.getContentText();
+    var meta = /<meta[^>]+http-equiv=["']refresh["'][^>]+content=["'][^"']*url=([^"']+)["']/i.exec(corpo);
+    if (meta && corpo.length < 5000) { atual = urlAbsoluta(decodificarHtml(meta[1]), atual) || ''; if (!atual) break; continue; }
+    return { texto: corpo, url: atual };
+  }
+  throw erroNegocio('Não foi possível abrir o link (redirecionamentos demais ou endereço inválido).');
+}
+
+function importarAnuncio(d) {
+  var url = validarLink(d.url);
+  if (!url) throw erroNegocio('Cole o link do anúncio.');
+  var pg = baixarPagina(url);
+  var info = extrairInfoAnuncio(pg.texto, pg.url);
+  if (!info.nome && info.fotos.length === 0) {
+    throw erroNegocio('Não consegui ler as informações deste anúncio (o site pode estar bloqueando leitura automática). Preencha os dados à mão: o link continua valendo para o botão de compra.');
+  }
+  return info;
+}
+
+/** Rode UMA vez no editor para liberar a leitura de anúncios (acesso a sites externos). */
+function autorizarImportacao() {
+  var r = UrlFetchApp.fetch('https://www.mercadolivre.com.br/', { muteHttpExceptions: true, followRedirects: true });
+  Logger.log('Acesso a sites externos autorizado (resposta ' + r.getResponseCode() + '). Agora crie uma NOVA VERSÃO da implantação.');
+}
+
+// ----- Pix "copia e cola" (BR Code estático do Banco Central) -----
+function pixCampo(id, valor) {
+  var tam = String(valor.length);
+  if (tam.length < 2) tam = '0' + tam;
+  return id + tam + valor;
+}
+
+function pixCrc16(texto) {
+  var crc = 0xFFFF;
+  for (var i = 0; i < texto.length; i++) {
+    crc ^= (texto.charCodeAt(i) & 0xFF) << 8;
+    for (var b = 0; b < 8; b++) { crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) : (crc << 1); crc &= 0xFFFF; }
+  }
+  var hex = crc.toString(16).toUpperCase();
+  while (hex.length < 4) hex = '0' + hex;
+  return hex;
+}
+
+function pixTexto(txt, max) {
+  return String(txt || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^\x20-\x7E]/g, '').trim().substring(0, max);
+}
+
+function gerarPixCopiaECola(dados) {
+  var chave = String(dados.chave || '').trim();
+  if (!chave) throw new Error('Chave Pix obrigatória.');
+  if (!Number.isInteger(dados.valorCentavos) || dados.valorCentavos <= 0) throw new Error('Valor inválido.');
+  var nome = pixTexto(dados.nome, 25), cidade = pixTexto(dados.cidade, 15);
+  if (!nome) throw new Error('Nome do recebedor obrigatório.');
+  if (!cidade) throw new Error('Cidade obrigatória.');
+  var txid = String(dados.txid || '***').replace(/[^A-Za-z0-9]/g, '').substring(0, 25) || '***';
+  var reais = Math.floor(dados.valorCentavos / 100), cent = dados.valorCentavos % 100;
+  var corpo = pixCampo('00', '01') + pixCampo('01', '11') +
+    pixCampo('26', pixCampo('00', 'br.gov.bcb.pix') + pixCampo('01', chave)) +
+    pixCampo('52', '0000') + pixCampo('53', '986') +
+    pixCampo('54', reais + '.' + (cent < 10 ? '0' : '') + cent) +
+    pixCampo('58', 'BR') + pixCampo('59', nome) + pixCampo('60', cidade) + pixCampo('62', pixCampo('05', txid)) + '6304';
+  return corpo + pixCrc16(corpo);
+}
+
+// ----- configuração da venda direta (administradores) -----
+function lerDireto() {
+  var c = lerConfig();
+  return { pixChave: c['pix.chave'] || '', pixNome: c['pix.nome'] || '', pixCidade: c['pix.cidade'] || '', instrucoes: c['direto.instrucoes'] || '', avisoEmail: c['direto.email'] || '', horas: PEDIDO_HORAS };
+}
+
+function pixConfigurado() {
+  var c = lerDireto();
+  return !!(c.pixChave && c.pixNome && c.pixCidade);
+}
+
+function salvarDireto(d) {
+  var chave = String(d.pixChave === undefined || d.pixChave === null ? '' : d.pixChave).trim();
+  var nome = limparTexto(d.pixNome, 25), cidade = limparTexto(d.pixCidade, 15);
+  var instrucoes = limparDescricao(d.instrucoes).substring(0, 500);
+  var email = normalizarEmail(d.avisoEmail);
+  if (email) validarEmail(email);
+  if (chave || nome || cidade) {
+    if (!chave || /[\s\u0000-\u001f]/.test(chave) || chave.length > 77) throw erroNegocio('Informe a chave Pix sem espaços (CPF, CNPJ, e-mail, telefone ou chave aleatória).');
+    if (!pixTexto(nome, 25)) throw erroNegocio('Informe o nome do recebedor (como aparece no banco).');
+    if (!pixTexto(cidade, 15)) throw erroNegocio('Informe a cidade do recebedor.');
+    try { gerarPixCopiaECola({ chave: chave, nome: nome, cidade: cidade, valorCentavos: 100 }); } catch (e) { throw erroNegocio('Dados do Pix inválidos: ' + e.message); }
+  }
+  comLock(function () {
+    gravarConfig({ 'pix.chave': chave, 'pix.nome': nome, 'pix.cidade': cidade, 'direto.instrucoes': instrucoes, 'direto.email': email });
+  });
+  return lerDireto();
+}
+
+// ----- pedidos (venda direta com entrega em mãos) -----
+var STATUS_PEDIDO = ['aguardando', 'aprovado', 'recusado', 'expirado', 'cancelado', 'pago'];
+
+function hashPedido(token) { return sha256Hex('pedido|' + token); }
+
+function statusEfetivo(p, agora) {
+  return (p.status === 'aguardando' && p.expiraEm <= agora) ? 'expirado' : p.status;
+}
+
+function pedidoParaComprador(p, agora) {
+  var st = statusEfetivo(p, agora);
+  var out = {
+    id: p.id, produto: { nome: p.produtoNome, precoCentavos: p.precoCentavos }, nome: p.nome, local: p.local, horario: p.horario,
+    status: st, criadoEm: p.criadoEm, expiraEm: p.expiraEm, agora: agora, horas: PEDIDO_HORAS, mensagem: p.mensagem || ''
+  };
+  if (st === 'aprovado' || st === 'pago') {
+    var c = lerDireto();
+    out.instrucoes = c.instrucoes;
+    if (st === 'aprovado' && pixConfigurado()) {
+      out.pix = { copiaECola: gerarPixCopiaECola({ chave: c.pixChave, nome: c.pixNome, cidade: c.pixCidade, valorCentavos: p.precoCentavos, txid: 'BR' + String(p.id).replace(/[^A-Za-z0-9]/g, '').substring(0, 12) }), valorCentavos: p.precoCentavos, favorecido: c.pixNome };
+    }
+  }
+  return out;
+}
+
+function criarPedido(d) {
+  var nome = limparTexto(d.nome, 80);
+  if (nome.length < 2) throw erroNegocio('Informe o seu nome.');
+  var tel = String(d.telefone === undefined || d.telefone === null ? '' : d.telefone).replace(/\D/g, '');
+  if (tel.length < 10 || tel.length > 13) throw erroNegocio('Informe um telefone com DDD (WhatsApp).');
+  var local = limparTexto(d.local, 200);
+  if (local.length < 3) throw erroNegocio('Informe onde você quer receber (bairro, ponto de encontro).');
+  var horario = limparTexto(d.horario, 100);
+  var obs = limparTexto(d.obs, 300);
+  if (d.aceite !== true) throw erroNegocio('Marque a autorização do uso dos seus dados para combinar a entrega.');
+  if (!pixConfigurado()) throw erroNegocio('A venda direta não está disponível no momento.');
+  var token = aleatorioHex(32);
+  var pedido = comLock(function () {
+    var prod = lerTabela('Produtos').filter(function (x) { return x.id === d.produtoId; })[0];
+    if (!prod || prod.ativo !== 1 || tipoDe(prod) !== 'direto') throw erroNegocio('Este produto não está disponível para venda direta.');
+    var agora = RELOGIO.agora();
+    var todos = lerTabela('Pedidos');
+    var abertos = todos.filter(function (x) { return statusEfetivo(x, agora) === 'aguardando'; });
+    if (abertos.length >= 100) throw erroNegocio('Estamos com muitos pedidos aguardando. Tente novamente mais tarde.');
+    if (abertos.filter(function (x) { return x.telefone === tel; }).length >= 3) throw erroNegocio('Você já tem pedidos aguardando resposta. Espere o vendedor responder.');
+    if (todos.filter(function (x) { return x.telefone === tel && x.criadoEm > agora - 3600 * 1000; }).length >= 5) throw erroNegocio('Muitos pedidos em pouco tempo. Tente de novo em uma hora.');
+    var id = novoId();
+    var linha = { id: id, tokenHash: hashPedido(token), produtoId: prod.id, produtoNome: prod.nome, precoCentavos: prod.precoCentavos, nome: nome, telefone: tel,
+      local: local, horario: horario, obs: obs, status: 'aguardando', criadoEm: agora, expiraEm: agora + PEDIDO_MS, decididoEm: 0, mensagem: '', pagoEm: 0 };
+    inserir('Pedidos', linha);
+    return linha;
+  });
+  try {
+    var aviso = lerDireto().avisoEmail;
+    if (aviso && emailsRestantes() !== 0) {
+      enviarEmail(aviso, SISTEMA_NOME + ': novo pedido de ' + pedido.produtoNome,
+        'Novo pedido de venda direta.\n\nProduto: ' + pedido.produtoNome + '\nValor: R$ ' + (pedido.precoCentavos / 100).toFixed(2).replace('.', ',') +
+        '\nComprador: ' + pedido.nome + '\nTelefone: ' + pedido.telefone + '\nLocal: ' + pedido.local + '\nHorário: ' + (pedido.horario || '-') +
+        '\n\nVocê tem ' + PEDIDO_HORAS + ' horas para responder no painel (aba Pedidos): ' + (siteUrlConfigurada() ? siteUrlConfigurada() + '/' + PAGINA_ENTRADA : ''));
+    }
+  } catch (e) { console.error('Aviso de pedido: ' + e); }
+  return { token: token, pedido: pedidoParaComprador(pedido, RELOGIO.agora()) };
+}
+
+function acharPedidoPorToken(token) {
+  token = String(token === undefined || token === null ? '' : token);
+  if (!/^[0-9a-f]{32}$/.test(token)) throw erroNegocio('Pedido não encontrado.');
+  var h = hashPedido(token);
+  var p = lerTabela('Pedidos').filter(function (x) { return x.tokenHash === h; })[0];
+  if (!p) throw erroNegocio('Pedido não encontrado.');
+  return p;
+}
+
+function consultarPedido(d) {
+  return pedidoParaComprador(acharPedidoPorToken(d.token), RELOGIO.agora());
+}
+
+function cancelarPedido(d) {
+  var token = d.token;
+  return comLock(function () {
+    var p = acharPedidoPorToken(token);
+    var agora = RELOGIO.agora();
+    var st = statusEfetivo(p, agora);
+    if (st !== 'aguardando' && st !== 'aprovado') throw erroNegocio('Este pedido não pode mais ser cancelado.');
+    p.status = 'cancelado'; p.decididoEm = agora;
+    atualizar('Pedidos', p._linha, p);
+    return pedidoParaComprador(p, agora);
+  });
+}
+
+function pedidoParaAdmin(p, agora) {
+  return { id: p.id, produtoId: p.produtoId, produto: p.produtoNome, precoCentavos: p.precoCentavos, nome: p.nome, telefone: p.telefone, local: p.local, horario: p.horario,
+    obs: p.obs, status: statusEfetivo(p, agora), criadoEm: p.criadoEm, expiraEm: p.expiraEm, decididoEm: p.decididoEm, mensagem: p.mensagem || '', pagoEm: p.pagoEm };
+}
+
+function listarPedidosAdmin() {
+  var agora = RELOGIO.agora();
+  var lista = lerTabela('Pedidos').sort(function (a, b) { return b.criadoEm - a.criadoEm; }).slice(0, 300).map(function (p) { return pedidoParaAdmin(p, agora); });
+  return { agora: agora, pedidos: lista, aguardando: lista.filter(function (p) { return p.status === 'aguardando'; }).length };
+}
+
+function decidirPedido(quem, d) {
+  if (d.decisao !== 'aprovar' && d.decisao !== 'recusar') throw erroNegocio('Decisão inválida.');
+  var msg = limparTexto(d.mensagem, 300);
+  if (d.decisao === 'aprovar' && !pixConfigurado()) throw erroNegocio('Configure o Pix antes de aprovar pedidos.');
+  return comLock(function () {
+    var p = lerTabela('Pedidos').filter(function (x) { return x.id === d.id; })[0];
+    if (!p) throw erroNegocio('Pedido não encontrado.');
+    var agora = RELOGIO.agora();
+    var st = statusEfetivo(p, agora);
+    if (st === 'expirado') throw erroNegocio('O prazo de ' + PEDIDO_HORAS + ' horas deste pedido terminou.');
+    if (st !== 'aguardando') throw erroNegocio('Este pedido já foi respondido ou cancelado.');
+    p.status = d.decisao === 'aprovar' ? 'aprovado' : 'recusado';
+    p.decididoEm = agora; p.mensagem = msg;
+    atualizar('Pedidos', p._linha, p);
+    registrar(quem, 'pedido ' + p.status, p.produtoNome);
+    return listarPedidosAdmin();
+  });
+}
+
+function marcarPedidoPago(quem, d) {
+  return comLock(function () {
+    var p = lerTabela('Pedidos').filter(function (x) { return x.id === d.id; })[0];
+    if (!p) throw erroNegocio('Pedido não encontrado.');
+    if (statusEfetivo(p, RELOGIO.agora()) !== 'aprovado') throw erroNegocio('Só pedidos aprovados podem ser marcados como pagos.');
+    p.status = 'pago'; p.pagoEm = RELOGIO.agora();
+    atualizar('Pedidos', p._linha, p);
+    registrar(quem, 'pedido pago', p.produtoNome);
+    return listarPedidosAdmin();
+  });
+}
+
+function excluirPedido(quem, d) {
+  return comLock(function () {
+    var p = lerTabela('Pedidos').filter(function (x) { return x.id === d.id; })[0];
+    if (!p) throw erroNegocio('Pedido não encontrado.');
+    var st = statusEfetivo(p, RELOGIO.agora());
+    if (st === 'aguardando' || st === 'aprovado') throw erroNegocio('Responda ou espere o pedido terminar antes de excluir.');
+    removerLinha('Pedidos', p._linha);
+    registrar(quem, 'pedido excluído', p.produtoNome);
+    return listarPedidosAdmin();
+  });
 }
 
 // ======================= Preparação da NOVA planilha e dos administradores =======================

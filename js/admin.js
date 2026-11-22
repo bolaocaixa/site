@@ -155,11 +155,12 @@
   function renderPainel() {
     var admin = ehAdmin();
     var abas = admin
-      ? [['produtos', 'Produtos'], ['propagandas', 'Propagandas e ofertas'], ['convites', 'Convites'], ehSupremo() ? ['contas', 'Contas (Supremo)'] : ['usuarios', 'Usuários'], ['conta', 'Minha conta']]
+      ? [['produtos', 'Produtos'], ['pedidos', 'Pedidos' + (estado.pedidosAguardando ? ' (' + estado.pedidosAguardando + ')' : '')], ['propagandas', 'Propagandas e ofertas'], ['convites', 'Convites'], ehSupremo() ? ['contas', 'Contas (Supremo)'] : ['usuarios', 'Usuários'], ['conta', 'Minha conta']]
       : [['propagandas', 'Propagandas e ofertas'], ['conta', 'Minha conta']];
     var A = window.BolaoAdmin;
     var conteudo;
     if (estado.aba === 'produtos' && admin) conteudo = A.telaProdutos(ctxAdmin);
+    else if (estado.aba === 'pedidos' && admin) conteudo = A.telaPedidos(ctxAdmin);
     else if (estado.aba === 'convites' && admin) conteudo = telaConvites();
     else if (estado.aba === 'usuarios' && admin && !ehSupremo()) conteudo = A.telaUsuarios(ctxAdmin);
     else if (estado.aba === 'contas' && ehSupremo()) conteudo = window.BolaoConta.telaContas(ctxAdmin);
@@ -175,7 +176,7 @@
       h('main', { class: 'painel' },
         abas.length > 0 ? h('div', { class: 'abas', role: 'tablist' }, abas.map(function (a) {
           var ativa = estado.aba === a[0];
-          return h('button', { role: 'tab', 'aria-selected': String(ativa), class: ativa ? 'ativa' : '',
+          return h('button', { role: 'tab', 'data-aba': a[0], 'aria-selected': String(ativa), class: ativa ? 'ativa' : '',
             onclick: function () { estado.aba = a[0]; estado.edicaoProduto = null; renderPainel(); } }, a[1]);
         })) : null,
         conteudo));

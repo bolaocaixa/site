@@ -8,7 +8,7 @@
   var Car = window.BolaoCarrossel;
   var CFG = window.BOLAO_CONFIG || {};
   var raiz = document.getElementById('app');
-  var estado = { produtos: [], pub: null, cat: '' };
+  var estado = { produtos: [], pub: null, cat: '', direto: false };
 
   function linkSeguro(l) { return typeof l === 'string' && /^https:\/\//i.test(l); }
 
@@ -19,13 +19,18 @@
     if (/mercadopago|mpago\.la|mercadolivre|mercadolibre/.test(host)) return 'Mercado Pago';
     if (/pagseguro|pagbank|pag\.ae/.test(host)) return 'PagSeguro';
     if (/shopee|shp\.ee/.test(host)) return 'Shopee';
+    if (/aliexpress|ali\.ski/.test(host)) return 'AliExpress';
     return '';
   }
 
-  function textoPagamento(link) {
+  function textoPagamento(link, p) {
+    if (p && p.tipo === 'direto') return 'Entrega em mãos · pagamento por Pix após a confirmação';
     var l = lojaDe(link);
     return l ? 'Pagamento seguro no ' + l : 'Você será levado ao site de pagamento';
   }
+
+  function vendaDireta(p) { return p.tipo === 'direto'; }
+  function compravel(p) { return vendaDireta(p) ? !!estado.direto : linkSeguro(p.linkCompra); }
 
   function desconto(p) {
     if (!(p.precoOriginalCentavos > p.precoCentavos)) return 0;
@@ -37,7 +42,7 @@
     var alvo = document.getElementById('cab-loja');
     if (!alvo) return;
     alvo.replaceChildren(
-      h('header', { class: 'topo' }, h('strong', {}, CFG.NOME || 'Loja'), h('a', { class: 'link-topo', href: '#produtos' }, 'Produtos')),
+      h('header', { class: 'topo' }, h('strong', {}, CFG.NOME || 'Loja'), h('a', { class: 'link-topo', href: '#produtos' }, 'Produtos'), h('span', { id: 'atalho-pedido' })),
       window.BolaoSlotsExtra ? window.BolaoSlotsExtra.criar('cabecalho') : null);
   }
 
@@ -65,7 +70,10 @@
   }
 
   function botaoComprar(p, classeExtra) {
-    if (!linkSeguro(p.linkCompra)) return h('span', { class: 'btn-comprar inativo', 'aria-disabled': 'true' }, 'Indisponível no momento');
+    if (vendaDireta(p) && estado.direto) {
+      return h('button', { type: 'button', class: 'btn-comprar' + (classeExtra ? ' ' + classeExtra : ''), onclick: function () { window.LojaPedido.abrir(p); } }, 'Comprar agora');
+    }
+    if (!compravel(p)) return h('span', { class: 'btn-comprar inativo', 'aria-disabled': 'true' }, 'Indisponível no momento');
     return h('a', { class: 'btn-comprar' + (classeExtra ? ' ' + classeExtra : ''), href: p.linkCompra, target: '_blank', rel: 'noopener noreferrer sponsored' }, 'Comprar agora');
   }
 
@@ -88,7 +96,7 @@
         blocoPreco(p),
         h('div', { class: 'prod-acoes' },
           botaoComprar(p),
-          linkSeguro(p.linkCompra) ? h('span', { class: 'pagto-info' }, textoPagamento(p.linkCompra)) : null,
+          compravel(p) ? h('span', { class: 'pagto-info' }, textoPagamento(p.linkCompra, p)) : null,
           h('button', { class: 'btn-detalhes', type: 'button', onclick: abrir }, 'Ver detalhes'))));
   }
 
@@ -137,7 +145,7 @@
         d > 0 ? h('span', { class: 'selo-desc', style: 'position:static;align-self:flex-start' }, 'Economize ' + d + '%') : null,
         p.descricao ? h('p', { class: 'descricao' }, p.descricao) : null,
         botaoComprar(p),
-        linkSeguro(p.linkCompra) ? h('span', { class: 'pagto-info' }, textoPagamento(p.linkCompra)) : null),
+        compravel(p) ? h('span', { class: 'pagto-info' }, textoPagamento(p.linkCompra, p)) : null),
       video(p),
       p.codigo ? h('div', { class: 'modal-video' }, h('iframe', {
         class: 'quadro-produto', title: 'Informações de ' + p.nome, sandbox: 'allow-scripts allow-popups allow-popups-to-escape-sandbox',
@@ -189,7 +197,7 @@
       h('h2', { class: 'titulo-secao', id: 'produtos' }, estado.cat || 'Produtos'),
       lista.length === 0 ? h('p', { class: 'vazio-loja' }, 'Em breve, novos produtos por aqui.')
         : h('section', { class: 'grade', 'aria-label': 'Produtos' }, lista.map(cartao)),
-      h('p', { class: 'aviso-compra' }, 'O pagamento e a entrega são feitos no site de pagamento do vendedor (Mercado Pago, PagSeguro ou Shopee), em ambiente seguro.'),
+      h('p', { class: 'aviso-compra' }, 'Nos produtos com link, o pagamento e a entrega são feitos no site do vendedor (Mercado Pago, PagSeguro, Shopee, Mercado Livre ou AliExpress). Na venda direta, a entrega é em mãos e o pagamento é por Pix depois da confirmação.'),
       h('p', { class: 'rodape-loja' }, h('a', { href: 'admin.html' }, 'Área restrita'))));
     if (window.BolaoSlotsExtra && estado.pub) window.BolaoSlotsExtra.aplicar(estado.pub);
   }
@@ -199,9 +207,11 @@
       var r = await Promise.all([API.chamar('publico.config', {}), API.chamar('publico.produtos', {})]);
       estado.pub = r[0];
       estado.produtos = r[1].produtos;
+      estado.direto = !!(r[1].direto && r[1].direto.ativo);
       cabecalho();
       topoSite();
       render();
+      if (window.LojaPedido && !estado.pedidoIniciado) { estado.pedidoIniciado = true; window.LojaPedido.iniciar(document.getElementById('atalho-pedido')); }
     } catch (e) {
       raiz.replaceChildren(h('main', { class: 'central' }, h('h1', {}, 'Não foi possível carregar a loja'), h('p', {}, e.message),
         h('button', { class: 'primario', onclick: carregar }, 'Tentar de novo')));
